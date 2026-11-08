@@ -562,9 +562,47 @@ func stopAndRemoveSourceContainer(log *zerolog.Logger,
 	// Capture running state before stop. AutoRemove only applies after a started container exits.
 	wasRunning := sourceContainer.IsRunning()
 
+	// A complete process identity lets us reconcile an uncertain stop without
+	// acting on a later generation or on configuration changed since the scan.
+	// Older/incomplete runtime inspect responses keep the previous error path.
+	var owned *dockerContainer.InspectResponse
+
+	if wasRunning && hasStopGeneration(sourceContainer.ContainerInfo()) {
+		fresh, inspectErr := api.ContainerInspect(ctx, string(sourceContainer.ID()), dockerClient.ContainerInspectOptions{})
+		if inspectErr != nil {
+			return fmt.Errorf("inspect container before stop: %w", inspectErr)
+		}
+
+		if !sameScannedStopTarget(sourceContainer.ContainerInfo(), &fresh.Container) || !fresh.Container.State.Running {
+			return errStopTargetChanged
+		}
+
+		owned = &fresh.Container
+	}
+
 	// Stop the container first.
 	err := stopSourceContainer(log, ctx, api, sourceContainer, timeout)
 	if err != nil {
+		// The daemon owns removal for AutoRemove containers. An uncertain
+		// stop cannot safely distinguish that disappearance from replacement.
+		if owned != nil && !owned.HostConfig.AutoRemove && uncertainStopError(err) {
+			// The Engine can continue a stop after its caller's deadline. Keep
+			// this one replacement alive under a bounded recovery phase,
+			// without extending the Engine's grace period or issuing another stop.
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
+				stopRecoveryTimeout(timeout, sourceContainer.StopTimeout()))
+			defer cancel()
+
+			recoveryErr := reconcileStoppedSource(recoveryCtx, api, owned, removeVolumes)
+			if recoveryErr != nil {
+				return errors.Join(err, recoveryErr)
+			}
+
+			clog.Warn().Err(err).Msg("Recovered delayed container stop; continuing the same replacement")
+
+			return nil
+		}
+
 		return err
 	}
 
