@@ -96,4 +96,21 @@ func TestRealEngineStopRecoveryDeadline(t *testing.T) {
 	require.NoError(t, err, "a bounded-out reconciliation must not remove the container")
 	require.True(t, after.Container.State.Running)
 	require.Equal(t, owned.Container.State.StartedAt, after.Container.State.StartedAt)
+
+	// The same real daemon stop completes after this phase's deadline. It is
+	// not adopted after the helper returns. This uses a short real context for
+	// the helper, not a fake clock or the full CLI's production timeout policy.
+	lateExit := api.ContainerWait(ctx, created.ID, dockerClient.ContainerWaitOptions{Condition: dockerContainer.WaitConditionNotRunning})
+	select {
+	case result := <-lateExit.Result:
+		require.Nil(t, result.Error)
+		require.Zero(t, result.StatusCode)
+	case waitErr := <-lateExit.Error:
+		require.NoError(t, waitErr)
+	}
+
+	late, err := api.ContainerInspect(ctx, created.ID, dockerClient.ContainerInspectOptions{})
+	require.NoError(t, err)
+	require.Equal(t, dockerContainer.StateExited, late.Container.State.Status)
+	require.Equal(t, owned.Container.State.StartedAt, late.Container.State.StartedAt)
 }

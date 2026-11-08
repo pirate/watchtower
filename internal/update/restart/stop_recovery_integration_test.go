@@ -40,7 +40,7 @@ import (
 // WATCHTOWER_TEST_DOCKER_HOST=unix:///path/to/local/docker.sock \
 // WATCHTOWER_TEST_IMAGE=ghcr.io/astral-sh/uv:python3.13-bookworm-slim \
 // WATCHTOWER_TEST_UPDATE_IMAGE=ghcr.io/astral-sh/uv:python3.14-bookworm-slim \
-// go test -tags=integration ./internal/container/client ./internal/update/restart -run TestRealEngine -timeout=180s -v.
+// go test -p 1 -tags=integration ./internal/container/client ./internal/update/restart -run TestRealEngine -timeout=180s -v.
 func TestRealEngineLateStopCompletion(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -158,7 +158,7 @@ func testRealLateStop(t *testing.T, params updateParams.Params, cancelOnTerm, ne
 
 	_, err = f.api.ContainerInspect(ctx, f.id, dockerClient.ContainerInspectOptions{})
 	require.True(t, cerrdefs.IsNotFound(err), "the owned old container should be removed only after its exit")
-	require.Equal(t, f.payload, f.readFile(t, ctx, replacement.Container.ID, "/tmp/watchtower-copy.txt"))
+	require.Equal(t, f.payload, f.readCopiedFile(t, ctx, replacement.Container.ID))
 	require.Contains(t, f.logs.String(), "Recovered delayed container stop")
 }
 
@@ -281,7 +281,7 @@ func TestRealEngineStopRecoveryRespectsOperatorChanges(t *testing.T) {
 				kept, inspectErr := f.api.ContainerInspect(ctx, f.id, dockerClient.ContainerInspectOptions{})
 				require.NoError(t, inspectErr, "operator-modified container must not be removed")
 				require.Equal(t, source.ContainerInfo().State.StartedAt, kept.Container.State.StartedAt)
-				require.Equal(t, f.payload, f.readFile(t, ctx, f.id, "/tmp/watchtower-copy.txt"))
+				require.Equal(t, f.payload, f.readCopiedFile(t, ctx, f.id))
 			}
 		})
 	}
@@ -355,7 +355,7 @@ func TestRealEngineDependencyReferences(t *testing.T) {
 				require.True(t, current.Container.State.Running)
 				require.Empty(t, current.Container.Mounts, "the dependency fixture must not create real mounts")
 				require.Equal(t, f.newImageID, current.Container.Image)
-				require.Equal(t, f.payload, f.readFile(t, ctx, current.Container.ID, "/tmp/watchtower-copy.txt"))
+				require.Equal(t, f.payload, f.readCopiedFile(t, ctx, current.Container.ID))
 				require.Equal(t, types.ContainerID(current.Container.ID), progress[types.ContainerID(f.id)].NewContainerID())
 			}
 		})
@@ -464,6 +464,12 @@ type realStopFixture struct {
 func newRealStopFixture(t *testing.T, configure ...func(*dockerClient.ContainerCreateOptions)) (*realStopFixture, context.Context) {
 	t.Helper()
 
+	return newRealStopFixtureWithTimeout(t, 45*time.Second, configure...)
+}
+
+func newRealStopFixtureWithTimeout(t *testing.T, budget time.Duration, configure ...func(*dockerClient.ContainerCreateOptions)) (*realStopFixture, context.Context) {
+	t.Helper()
+
 	host := os.Getenv("WATCHTOWER_TEST_DOCKER_HOST")
 	image := os.Getenv("WATCHTOWER_TEST_IMAGE")
 
@@ -477,7 +483,7 @@ func newRealStopFixture(t *testing.T, configure ...func(*dockerClient.ContainerC
 	t.Setenv("DOCKER_API_VERSION", "")
 	t.Setenv("DOCKER_TLS_VERIFY", "")
 	t.Setenv("DOCKER_CERT_PATH", "")
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), budget)
 	t.Cleanup(cancel)
 
 	api, err := dockerClient.New(dockerClient.WithHost(host))
@@ -641,10 +647,10 @@ func (f *realStopFixture) copyFile(t *testing.T, ctx context.Context, id, name, 
 	require.NoError(t, err)
 }
 
-func (f *realStopFixture) readFile(t *testing.T, ctx context.Context, id, path string) string {
+func (f *realStopFixture) readCopiedFile(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
 
-	result, err := f.api.CopyFromContainer(ctx, id, dockerClient.CopyFromContainerOptions{SourcePath: path})
+	result, err := f.api.CopyFromContainer(ctx, id, dockerClient.CopyFromContainerOptions{SourcePath: "/tmp/watchtower-copy.txt"})
 	require.NoError(t, err)
 
 	defer result.Content.Close()
