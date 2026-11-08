@@ -1,9 +1,9 @@
 package params
 
 import (
-	"math"
 	"time"
 
+	"github.com/nicholas-fedor/watchtower/internal/container"
 	"github.com/nicholas-fedor/watchtower/internal/observability/events"
 	gitConfig "github.com/nicholas-fedor/watchtower/internal/settings/config/git"
 	registryConfig "github.com/nicholas-fedor/watchtower/internal/settings/config/registry"
@@ -39,10 +39,6 @@ type Params struct {
 	GitComposeStash     bool                    // Save and restore local Compose project files around checkout.
 }
 
-// detachedCallBudget is the time a detached Docker call gets beyond the
-// container stop timeout.
-const detachedCallBudget = 30 * time.Second
-
 // DetachedTimeout returns the bound for Docker calls that run detached from the
 // update session, such as restoring a container after a failed update or
 // removing old images.
@@ -55,7 +51,7 @@ const detachedCallBudget = 30 * time.Second
 // Returns:
 //   - time.Duration: The bound for detached Docker calls.
 func (p Params) DetachedTimeout() time.Duration {
-	return detachedBound(p.Timeout)
+	return container.DetachedCallTimeout(p.Timeout)
 }
 
 // DetachedStopTimeout returns the bound for detached Docker calls that stop
@@ -72,7 +68,7 @@ func (p Params) DetachedTimeout() time.Duration {
 // Returns:
 //   - time.Duration: The bound for the detached calls.
 func (p Params) DetachedStopTimeout(c types.Container) time.Duration {
-	return detachedBound(max(p.Timeout, c.StopTimeout(p.Timeout)))
+	return container.DetachedCallTimeout(max(p.Timeout, c.StopTimeout(p.Timeout)))
 }
 
 // ScanStartedData returns the payload of the scan_started event. It copies only
@@ -95,16 +91,4 @@ func (p Params) ScanStartedData() events.ScanStartedData {
 		EphemeralSelfUpdate: p.EphemeralSelfUpdate,
 		ReviveStopped:       p.ReviveStopped,
 	}
-}
-
-// detachedBound returns a stop timeout plus 30 seconds. A negative stop timeout
-// counts as zero, and the result saturates at the longest duration.
-//
-// Parameters:
-//   - stop: How long a stop may wait.
-//
-// Returns:
-//   - time.Duration: The bound for detached Docker calls around that stop.
-func detachedBound(stop time.Duration) time.Duration {
-	return min(max(stop, 0), math.MaxInt64-detachedCallBudget) + detachedCallBudget
 }

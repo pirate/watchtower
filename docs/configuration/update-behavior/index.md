@@ -139,6 +139,31 @@ Environment Variable: WATCHTOWER_TIMEOUT
     A stop timeout set on the container itself takes precedence, such as one set with [`docker run --stop-timeout`](https://docs.docker.com/reference/cli/docker/container/run/#stop-timeout) or the Compose [`stop_grace_period`](https://docs.docker.com/reference/compose-file/services/#stop_grace_period) option.
     A container stop timeout of `-1`, which tells Docker to wait indefinitely, is ignored in favor of this option.
 
+### A stop that finishes after an API error
+
+A Docker stop request can fail on the client while the daemon is still stopping the container.
+For a container that Watchtower confirmed was running immediately before its own stop request,
+Watchtower waits for that same container's exit and may finish the same replacement.
+It uses Docker's wait API, without sending another stop signal. The original stop error remains in the log,
+followed by a recovery warning if replacement can continue. `--no-restart` and copied-file restoration still apply.
+
+This recovery phase is bounded by the larger of the configured and container-specific stop timeouts,
+plus 30 seconds for API calls. The bound starts **after the stop error**, so it can extend the total update duration.
+It does not increase Docker's graceful-stop timeout or Watchtower's existing shutdown grace period.
+Cancellation prevents new work, but an already-issued stop may be reconciled within this bound so cancellation
+alone does not strand a container that Docker subsequently stops.
+
+Recovery requires the original container ID, process generation, name, configuration, and stable network settings
+still to match. It declines recovery if the container is gone or has changed. In particular, an uncertain stop
+of an automatically removed (`AutoRemove`) container is not reconciled because the daemon owns its removal;
+ordinary successful `AutoRemove` updates are unchanged. Inspection and removal are separate Docker operations,
+so these checks cannot guarantee safety against every concurrent operator change. Avoid concurrent lifecycle
+changes while an update is running.
+
+This is not persistent recovery: an exit after the recovery deadline, daemon unavailability, or Watchtower process
+termination can still require an operator to restore service. Watchtower does not remember work across restarts
+or revive other stopped containers on later polls. This does not enable `--include-stopped` or `--revive-stopped`.
+
 ## Monitor Only
 
 Monitors for new images, sends notifications, and runs lifecycle hooks without updating containers.
